@@ -1,32 +1,56 @@
 const { createHmac } = require('crypto');
 export const config = {
   api: {
-    bodyParser: false, // 关闭自动解析，拿到原始raw body
+    bodyParser: false,
   },
 };
+
+let cachedAccessToken = null;
+let tokenExpireAt = 0;
+async function getShopifyAccessToken(shop, clientId, clientSecret) {
+  const now = Date.now() / 1000;
+  if (cachedAccessToken && tokenExpireAt > now + 60) {
+    return cachedAccessToken;
+  }
+  const res = await fetch(`https://${shop}/admin/oauth/access_token`, {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({
+      grant_type: "client_credentials",
+      client_id: clientId,
+      client_secret: clientSecret
+    })
+  });
+  const data = await res.json();
+  if (!data.access_token) throw new Error(`获取token失败: ${JSON.stringify(data)}`);
+  cachedAccessToken = data.access_token;
+  tokenExpireAt = now + data.expires_in;
+  return cachedAccessToken;
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end();
-  // 读取原始body buffer
   const buffers = [];
-  for await (const chunk of req) {
-    buffers.push(chunk);
-  }
+  for await (const chunk of req) buffers.push(chunk);
   const rawBody = Buffer.concat(buffers).toString();
 
-  // Shopify HMAC校验（临时注释，Postman调试用）
-  //const hmacHeader = req.headers['x-shopify-hmac-sha256'];
-  //const hash = createHmac('sha256', process.env.SHOPIFY_API_SECRET)
-    //.update(rawBody, 'utf8')
-   // .digest('base64');
- // if (hash !== hmacHeader) {
-   // return res.status(403).send("Invalid Shopify HMAC");
- // }
+  // Shopify Webhook HMAC校验（不变，使用SHOPIFY_API_SECRET）
+  const hmacHeader = req.headers['x-shopify-hmac-sha256'];
+  const hash = createHmac('sha256', process.env.SHOPIFY_API_SECRET)
+    .update(rawBody, 'utf8')
+    .digest('base64');
+  if (hash !== hmacHeader) {
+    console.log("Shopify Webhook HMAC校验失败");
+    return res.status(403).send("Invalid Shopify HMAC");
+  }
 
-  // 把原始字符串转成json对象，后面业务代码继续使用
   const order = JSON.parse(rawBody);
   const orderId = order.order_id;
   const amount = order.total_price;
   const currency = order.currency;
+  const shop = process.env.SHOPIFY_SHOP;
+  const apiVersion = "2026-10";
+
   try {
     const npResp = await fetch("https://api.nowpayments.io/v1/invoice", {
       method: "POST",
@@ -44,25 +68,48 @@ export default async function handler(req, res) {
     });
     const npData = await npResp.json();
     console.log("NowPayments invoice response:", npData);
-    // 重点修改：nowpay invoice接口返回的是 id，不是 invoice_id
     if (!npData.id) {
       return res.status(400).json({
         error: "Failed to create NowPayments invoice",
         np_detail: npData
       });
     }
-    // 将invoice id写入Shopify订单元字段
-    await fetch(`https://${process.env.SHOPIFY_SHOP}/admin/api/2026-10/orders/${orderId}/metafields.json`, {
-      method: "POST",
+
+    // 获取动态access token
+    const accessToken = await getShopifyAccessToken(
+      shop,
+      process.env.SHOPIFY_CLIENT_ID,
+      process.env.SHOPIFY_CLIENT_SECRET
+    );
+
+    // metafield upsert
+    const getMetaRes = await fetch(`https://${shop}/admin/api/${apiVersion}/orders/${orderId}/metafields.json?namespace=nowpayments&key=invoice_id`, {
       headers: {
-        "X-Shopify-Access-Token": process.env.SHOPIFY_ADMIN_TOKEN,
+        "X-Shopify-Access-Token": accessToken,
+        "Content-Type": "application/json",
+      },
+    });
+    const metaData = await getMetaRes.json();
+    const existingMeta = metaData.metafields?.[0];
+    let metaUrl, metaMethod;
+    if (existingMeta?.id) {
+      metaUrl = `https://${shop}/admin/api/${apiVersion}/metafields/${existingMeta.id}.json`;
+      metaMethod = "PUT";
+    } else {
+      metaUrl = `https://${shop}/admin/api/${apiVersion}/orders/${orderId}/metafields.json`;
+      metaMethod = "POST";
+    }
+    await fetch(metaUrl, {
+      method: metaMethod,
+      headers: {
+        "X-Shopify-Access-Token": accessToken,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
         metafield: {
           namespace: "nowpayments",
           key: "invoice_id",
-          value: npData.id, // 这里改成 npData.id
+          value: npData.id,
           type: "single_line_text_field"
         }
       })
@@ -70,6 +117,6 @@ export default async function handler(req, res) {
     return res.status(200).json({ payment_url: npData.invoice_url });
   } catch (err) {
     console.error("Webhook error", err);
-    return res.status(500).json({ error: "Server error" });
+    return res.status(500).json({ error: "Server error", detail: err.message });
   }
 }
