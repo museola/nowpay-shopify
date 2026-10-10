@@ -17,14 +17,14 @@ export default async function handler(req, res) {
   const rawBody = Buffer.concat(buffers).toString();
 
   // Shopify HMAC校验
-  const hmacHeader = req.headers['x-shopify-hmac-sha256'];
-  const hash = createHmac('sha256', process.env.SHOPIFY_API_SECRET)
-    .update(rawBody, 'utf8')
-    .digest('base64');
+  //const hmacHeader = req.headers['x-shopify-hmac-sha256'];
+  //const hash = createHmac('sha256', process.env.SHOPIFY_API_SECRET)
+    //.update(rawBody, 'utf8')
+   // .digest('base64');
 
-  if (hash !== hmacHeader) {
-    return res.status(403).send("Invalid Shopify HMAC");
-  }
+ // if (hash !== hmacHeader) {
+   // return res.status(403).send("Invalid Shopify HMAC");
+ // }
 
   // 把原始字符串转成json对象，后面业务代码继续使用
   const order = JSON.parse(rawBody);
