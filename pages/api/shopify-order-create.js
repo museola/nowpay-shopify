@@ -5,16 +5,19 @@ export const config = {
   },
 };
 
+// 全局缓存access token
 let cachedAccessToken = null;
 let tokenExpireAt = 0;
+
 async function getShopifyAccessToken(shop, clientId, clientSecret) {
   const now = Date.now() / 1000;
+  // 预留60秒缓冲，避免临界过期
   if (cachedAccessToken && tokenExpireAt > now + 60) {
     return cachedAccessToken;
   }
   const res = await fetch(`https://${shop}/admin/oauth/access_token`, {
     method: "POST",
-    headers: {"Content-Type":"application/json"},
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       grant_type: "client_credentials",
       client_id: clientId,
@@ -22,7 +25,9 @@ async function getShopifyAccessToken(shop, clientId, clientSecret) {
     })
   });
   const data = await res.json();
-  if (!data.access_token) throw new Error(`获取token失败: ${JSON.stringify(data)}`);
+  if (!data.access_token) {
+    throw new Error(`获取Shopify Token失败: ${JSON.stringify(data)}`);
+  }
   cachedAccessToken = data.access_token;
   tokenExpireAt = now + data.expires_in;
   return cachedAccessToken;
@@ -34,7 +39,7 @@ export default async function handler(req, res) {
   for await (const chunk of req) buffers.push(chunk);
   const rawBody = Buffer.concat(buffers).toString();
 
-  // Shopify Webhook HMAC校验（不变，使用SHOPIFY_API_SECRET）
+  // Shopify Webhook HMAC校验（不变，使用App Secret）
   const hmacHeader = req.headers['x-shopify-hmac-sha256'];
   const hash = createHmac('sha256', process.env.SHOPIFY_API_SECRET)
     .update(rawBody, 'utf8')
@@ -52,6 +57,7 @@ export default async function handler(req, res) {
   const apiVersion = "2026-10";
 
   try {
+    // 调用NowPayments创建invoice
     const npResp = await fetch("https://api.nowpayments.io/v1/invoice", {
       method: "POST",
       headers: {
@@ -75,14 +81,14 @@ export default async function handler(req, res) {
       });
     }
 
-    // 获取动态access token
+    // 获取短期access_token
     const accessToken = await getShopifyAccessToken(
       shop,
       process.env.SHOPIFY_CLIENT_ID,
       process.env.SHOPIFY_CLIENT_SECRET
     );
 
-    // metafield upsert
+    // Metafield Upsert：存在更新，不存在新建
     const getMetaRes = await fetch(`https://${shop}/admin/api/${apiVersion}/orders/${orderId}/metafields.json?namespace=nowpayments&key=invoice_id`, {
       headers: {
         "X-Shopify-Access-Token": accessToken,
