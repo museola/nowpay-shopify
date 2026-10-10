@@ -4,7 +4,6 @@ import {
 import crypto from 'node:crypto';
 import pg from 'pg';
 import Decimal from 'decimal.js';
-import { Resend } from 'resend';
 const { Pool } = pg;
 export const config = {
   api: { bodyParser: false },
@@ -405,37 +404,6 @@ if (data.invoice_id !== null && data.invoice_id !== undefined) {
     await client.query('COMMIT');
     transactionOpen = false;
     console.log('Payment metadata recorded:', paymentId);
-
-    // Resend 付款确认邮件（非阻塞，开关控制）
-    try {
-      if (process.env.PAYMENT_EMAILS_ENABLED === 'true') {
-        const customerEmail = order.email;
-        if (customerEmail) {
-          const resend = new Resend(requiredEnv('RESEND_API_KEY'));
-          const { error } = await resend.emails.send({
-            from: requiredEnv('RESEND_FROM_EMAIL'),
-            to: [customerEmail],
-            subject: '✅ Payment Confirmed - MuseOla',
-            html: `
-              <h2>Your Crypto Payment Has Been Confirmed</h2>
-              <p>Shopify Order ID: ${orderId}</p>
-              <p>Order Total: $${mapping.price_amount} ${mapping.price_currency.toUpperCase()}</p>
-              <p>Payment ID: ${paymentId}</p>
-              <p>Thank you for your purchase.</p>
-            `,
-          });
-          if (error) {
-            console.error('Resend email send error:', error);
-          } else {
-            console.log('Payment confirmation email sent to', customerEmail);
-          }
-        } else {
-          console.warn('No customer email found on Shopify order', orderId);
-        }
-      }
-    } catch (emailErr) {
-      console.error('Email sending exception (non-blocking):', emailErr);
-    }
 
     return res.status(200).json({ received: true, processed: true });
   } catch (error) {
