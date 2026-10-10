@@ -4,17 +4,40 @@ export const config = {
     bodyParser: false,
   },
 };
+
+let cachedAccessToken = null;
+let tokenExpireAt = 0;
+async function getShopifyAccessToken(shop, clientId, clientSecret) {
+  const now = Date.now() / 1000;
+  if (cachedAccessToken && tokenExpireAt > now + 60) {
+    return cachedAccessToken;
+  }
+  const res = await fetch(`https://${shop}/admin/oauth/access_token`, {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({
+      grant_type: "client_credentials",
+      client_id: clientId,
+      client_secret: clientSecret
+    })
+  });
+  const data = await res.json();
+  if (!data.access_token) throw new Error(`获取token失败: ${JSON.stringify(data)}`);
+  cachedAccessToken = data.access_token;
+  tokenExpireAt = now + data.expires_in;
+  return cachedAccessToken;
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).end();
   }
-  // 读取原始body
   const buffers = [];
   for await (const chunk of req) buffers.push(chunk);
   const rawBody = Buffer.concat(buffers).toString();
   const data = JSON.parse(rawBody);
 
-  // NowPayments IPN签名校验（生产环境启用）
+  // NowPayments IPN HMAC签名校验
   const hmacHeader = req.headers['x-nowpayments-sig'];
   const npSecret = process.env.NOWPAYMENTS_IPN_SECRET;
   const sorted = Object.keys(data).sort();
@@ -34,24 +57,26 @@ export default async function handler(req, res) {
   const orderId = data.order_id;
   const paymentStatus = data.payment_status;
 
-  // 仅支付成功时更新Shopify订单
   if (paymentStatus === 'finished') {
     try {
       const shop = process.env.SHOPIFY_SHOP;
-      const token = process.env.SHOPIFY_ADMIN_TOKEN;
       const apiVersion = "2026-10";
+      const accessToken = await getShopifyAccessToken(
+        shop,
+        process.env.SHOPIFY_CLIENT_ID,
+        process.env.SHOPIFY_CLIENT_SECRET
+      );
 
-      // 1. 查询该订单下nowpayments.payment_status的metafield
+      // 查询现有metafield
       const getMetaRes = await fetch(`https://${shop}/admin/api/${apiVersion}/orders/${orderId}/metafields.json?namespace=nowpayments&key=payment_status`, {
         headers: {
-          "X-Shopify-Access-Token": token,
+          "X-Shopify-Access-Token": accessToken,
           "Content-Type": "application/json",
         },
       });
       const metaData = await getMetaRes.json();
       const existingMeta = metaData.metafields?.[0];
 
-      // 2. 存在则PUT更新，不存在POST新建
       let metaUrl, metaMethod;
       if (existingMeta?.id) {
         metaUrl = `https://${shop}/admin/api/${apiVersion}/metafields/${existingMeta.id}.json`;
@@ -63,7 +88,7 @@ export default async function handler(req, res) {
       await fetch(metaUrl, {
         method: metaMethod,
         headers: {
-          "X-Shopify-Access-Token": token,
+          "X-Shopify-Access-Token": accessToken,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
@@ -80,7 +105,7 @@ export default async function handler(req, res) {
       await fetch(`https://${shop}/admin/api/${apiVersion}/orders/${orderId}.json`, {
         method: "PUT",
         headers: {
-          "X-Shopify-Access-Token": token,
+          "X-Shopify-Access-Token": accessToken,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
