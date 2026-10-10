@@ -1,32 +1,44 @@
+const { createHmac } = require('crypto');
 
+export const config = {
+  api: {
+    bodyParser: false, // 关闭自动解析，拿到原始raw body
+  },
+};
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end();
 
-  // ========== Shopify Webhook HMAC校验 ==========
-  // 注意：Next API 默认会解析body，原始rawBody需要特殊配置，这里采用兼容写法
+  // 读取原始body buffer
+  const buffers = [];
+  for await (const chunk of req) {
+    buffers.push(chunk);
+  }
+  const rawBody = Buffer.concat(buffers).toString();
+
+  // Shopify HMAC校验
   const hmacHeader = req.headers['x-shopify-hmac-sha256'];
-  const bodyRaw = JSON.stringify(req.body);
-  const hash = crypto.createHmac('sha256', process.env.SHOPIFY_API_SECRET)
-    .update(bodyRaw, 'utf8')
+  const hash = createHmac('sha256', process.env.SHOPIFY_API_SECRET)
+    .update(rawBody, 'utf8')
     .digest('base64');
 
   if (hash !== hmacHeader) {
     return res.status(403).send("Invalid Shopify HMAC");
   }
 
-  const order = req.body;
+  // 把原始字符串转成json对象，后面业务代码继续使用
+  const order = JSON.parse(rawBody);
   const orderId = order.order_id;
   const amount = order.total_price;
   const currency = order.currency;
 
   try {
-    // 调用 NowPayments 创建支付单
+    // 下面你原来 NowPayments + Shopify metafield 的代码保持不动
     const npResp = await fetch("https://api.nowpayments.io/v1/invoice", {
       method: "POST",
       headers: {
         "x-api-key": process.env.NOWPAYMENTS_API_KEY,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
         price_amount: amount,
@@ -48,7 +60,7 @@ export default async function handler(req, res) {
       method: "POST",
       headers: {
         "X-Shopify-Access-Token": process.env.SHOPIFY_ADMIN_TOKEN,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
         metafield: {
