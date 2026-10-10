@@ -1,3 +1,7 @@
+console.log("==== DEBUG SHOPIFY_WEBHOOK_SECRET ====");
+console.log("Raw value:", process.env.SHOPIFY_WEBHOOK_SECRET);
+console.log("Is defined?", typeof process.env.SHOPIFY_WEBHOOK_SECRET !== "undefined");
+console.log("String length:", process.env.SHOPIFY_WEBHOOK_SECRET?.length);
 const { createHmac } = require('crypto');
 export const config = {
   api: {
