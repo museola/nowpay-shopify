@@ -44,13 +44,14 @@ export default async function handler(req, res) {
     });
     const npData = await npResp.json();
     console.log("NowPayments invoice response:", npData);
-    if (!npData.invoice_id) {
+    // 重点修改：nowpay invoice接口返回的是 id，不是 invoice_id
+    if (!npData.id) {
       return res.status(400).json({
         error: "Failed to create NowPayments invoice",
         np_detail: npData
       });
     }
-    // 将invoice_id写入Shopify订单元字段
+    // 将invoice id写入Shopify订单元字段
     await fetch(`https://${process.env.SHOPIFY_SHOP}/admin/api/2026-10/orders/${orderId}/metafields.json`, {
       method: "POST",
       headers: {
@@ -61,7 +62,7 @@ export default async function handler(req, res) {
         metafield: {
           namespace: "nowpayments",
           key: "invoice_id",
-          value: npData.invoice_id,
+          value: npData.id, // 这里改成 npData.id
           type: "single_line_text_field"
         }
       })
