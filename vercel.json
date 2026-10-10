@@ -1,8 +1,7 @@
 {
-  "version":2,
-  "functions":{
-    "pages/api/*.js":{
-      "maxDuration":10
-    }
-  }
+  "buildCommand": "npm run build",
+  "outputDirectory": ".next",
+  "devCommand": "npm run dev",
+  "installCommand": "npm install",
+  "framework": "nextjs"
 }
