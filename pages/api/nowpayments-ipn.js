@@ -1,3 +1,6 @@
+import {
+  ensureInvoicePaymentMapping
+} from '../../lib/nowpayments-invoices';
 import crypto from 'node:crypto';
 import pg from 'pg';
 import Decimal from 'decimal.js';
@@ -305,6 +308,20 @@ export default async function handler(req, res) {
     if (data.payment_status !== 'finished') {
       return res.status(200).json({ received: true, processed: false });
     }
+// 必须位于 NOWPayments 签名校验成功之后。
+// 旧直接付款记录继续使用原映射；新发票付款先建立关联。
+if (data.invoice_id !== null && data.invoice_id !== undefined) {
+  const mappingResult = await ensureInvoicePaymentMapping(data);
+
+  if (mappingResult.manualReview) {
+    console.warn('Invoice payment saved for manual review');
+
+    return res.status(200).json({
+      received: true,
+      manualReview: true,
+    });
+  }
+}
 
     client = await getPool().connect();
 
