@@ -42,8 +42,32 @@ export default async function handler(req, res) {
     try { order = JSON.parse(body.toString('utf8')); } catch { return res.status(400).send('Invalid JSON'); }
     if (!order || typeof order !== 'object' || Array.isArray(order)) return res.status(400).send('Invalid order');
     const method = env('NOWPAYMENTS_PAYMENT_METHOD');
-    const eligible = Array.isArray(order.payment_gateway_names) && order.payment_gateway_names.includes(method);
-    if (!eligible || order.cancelled_at || order.financial_status !== 'pending') return res.status(200).json({ received: true, skipped: true });
+const gateways = Array.isArray(order.payment_gateway_names)
+  ? order.payment_gateway_names
+  : [];
+const eligible = gateways.includes(method);
+let skipReason = null;
+if (!eligible) {
+  skipReason = 'payment_gateway_not_match';
+} else if (order.cancelled_at) {
+  skipReason = 'order_cancelled';
+} else if (order.financial_status !== 'pending') {
+  skipReason = 'financial_status_not_pending';
+}
+if (skipReason) {
+  console.log('Order webhook skipped:', {
+    reason: skipReason,
+    gateways,
+    targetGateway: method,
+    financialStatus: order.financial_status,
+    cancelled: Boolean(order.cancelled_at),
+  });
+  return res.status(200).json({
+    received: true,
+    skipped: true,
+    reason: skipReason,
+  });
+}
     // Explicit deployment switch. Enable only after domain verification, tables, and testing.
     if (process.env.PAYMENT_EMAILS_ENABLED !== 'true') return res.status(503).send('Payment email workflow not enabled');
     const outcome = await createInvoiceAndEmail(order);
