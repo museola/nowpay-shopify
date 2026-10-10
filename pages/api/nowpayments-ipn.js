@@ -14,36 +14,56 @@ export default async function handler(req, res) {
   const rawBody = Buffer.concat(buffers).toString();
   const data = JSON.parse(rawBody);
 
-  // ========== 【调试：临时注释IPN签名校验】上线务必取消注释 ==========
-  // const hmacHeader = req.headers['x-nowpayments-sig'];
-  // const npSecret = process.env.NOWPAYMENTS_IPN_SECRET;
-  // const sorted = Object.keys(data).sort();
-  // let str = '';
-  // for (const k of sorted) {
-  //   if (k !== 'signature') {
-  //     str += `${k}${data[k]}`;
-  //   }
-  // }
-  // const hash = createHmac('sha512', npSecret).update(str).digest('hex');
-  // if (hash !== hmacHeader) {
-  //   console.log("NowPayments IPN HMAC校验失败");
-  //   return res.status(403).end();
-  // }
-  // =====================================================================
+  // NowPayments IPN签名校验（生产环境启用）
+  const hmacHeader = req.headers['x-nowpayments-sig'];
+  const npSecret = process.env.NOWPAYMENTS_IPN_SECRET;
+  const sorted = Object.keys(data).sort();
+  let str = '';
+  for (const k of sorted) {
+    if (k !== 'signature') {
+      str += `${k}${data[k]}`;
+    }
+  }
+  const hash = createHmac('sha512', npSecret).update(str).digest('hex');
+  if (hash !== hmacHeader) {
+    console.log("NowPayments IPN HMAC校验失败");
+    return res.status(403).end();
+  }
 
   console.log("✅ NowPayments IPN通知：", data);
-  // 👉 恢复这两行！之前被注释掉了
   const orderId = data.order_id;
   const paymentStatus = data.payment_status;
 
   // 仅支付成功时更新Shopify订单
   if (paymentStatus === 'finished') {
     try {
-      // 更新订单metafield标记支付状态
-      await fetch(`https://${process.env.SHOPIFY_SHOP}/admin/api/2026-10/orders/${orderId}/metafields.json`, {
-        method: "POST",
+      const shop = process.env.SHOPIFY_SHOP;
+      const token = process.env.SHOPIFY_ADMIN_TOKEN;
+      const apiVersion = "2026-10";
+
+      // 1. 查询该订单下nowpayments.payment_status的metafield
+      const getMetaRes = await fetch(`https://${shop}/admin/api/${apiVersion}/orders/${orderId}/metafields.json?namespace=nowpayments&key=payment_status`, {
         headers: {
-          "X-Shopify-Access-Token": process.env.SHOPIFY_ADMIN_TOKEN,
+          "X-Shopify-Access-Token": token,
+          "Content-Type": "application/json",
+        },
+      });
+      const metaData = await getMetaRes.json();
+      const existingMeta = metaData.metafields?.[0];
+
+      // 2. 存在则PUT更新，不存在POST新建
+      let metaUrl, metaMethod;
+      if (existingMeta?.id) {
+        metaUrl = `https://${shop}/admin/api/${apiVersion}/metafields/${existingMeta.id}.json`;
+        metaMethod = "PUT";
+      } else {
+        metaUrl = `https://${shop}/admin/api/${apiVersion}/orders/${orderId}/metafields.json`;
+        metaMethod = "POST";
+      }
+      await fetch(metaUrl, {
+        method: metaMethod,
+        headers: {
+          "X-Shopify-Access-Token": token,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
@@ -55,11 +75,12 @@ export default async function handler(req, res) {
           }
         })
       });
-      // 添加订单备注
-      await fetch(`https://${process.env.SHOPIFY_SHOP}/admin/api/2026-10/orders/${orderId}.json`, {
+
+      // 更新订单备注
+      await fetch(`https://${shop}/admin/api/${apiVersion}/orders/${orderId}.json`, {
         method: "PUT",
         headers: {
-          "X-Shopify-Access-Token": process.env.SHOPIFY_ADMIN_TOKEN,
+          "X-Shopify-Access-Token": token,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
