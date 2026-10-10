@@ -1,12 +1,25 @@
 import crypto from 'crypto';
 
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+};
+
+function readRawBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
 export default async function handler(req, res) {
-  // 只允许POST请求
   if (req.method !== 'POST') {
     return res.status(405).send('Method Not Allowed');
   }
 
-  // ✅ 在handler内部读取秘钥，避免顶层变量undefined问题
   const WEBHOOK_SECRET = process.env.SHOPIFY_WEBHOOK_SECRET;
   if (!WEBHOOK_SECRET) {
     console.error('ERROR: SHOPIFY_WEBHOOK_SECRET is missing');
@@ -14,8 +27,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Shopify 原始body（必须用原始payload，不能用JSON解析后的对象，否则签名校验失败）
-    const rawBody = JSON.stringify(req.body);
+    const rawBody = await readRawBody(req);
     const hmacHeader = req.headers['x-shopify-hmac-sha256'];
 
     if (!hmacHeader) {
@@ -23,23 +35,21 @@ export default async function handler(req, res) {
       return res.status(400).send('Missing HMAC header');
     }
 
-    // 计算HMAC
     const hmac = crypto.createHmac('sha256', WEBHOOK_SECRET);
     const digest = Buffer.from(hmac.update(rawBody).digest('base64'), 'utf8');
     const checksum = Buffer.from(hmacHeader, 'utf8');
 
-    // 安全比对，防止时序攻击
     const isValid = crypto.timingSafeEqual(digest, checksum);
-
     if (!isValid) {
       console.error('HMAC signature invalid');
       return res.status(403).send('Invalid signature');
     }
 
     console.log('✅ Shopify Webhook HMAC verify success');
-    // ========== 这里放你的订单业务逻辑 ==========
-    const orderData = req.body;
+    const orderData = JSON.parse(rawBody);
     console.log('Received order:', orderData.order?.name);
+
+    // =====在这里追加你的订单业务代码=====
 
     return res.status(200).send('ok');
   } catch (err) {
